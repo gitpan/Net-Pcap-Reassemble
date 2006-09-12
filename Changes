@@ -1,0 +1,5 @@
+Revision history for Perl extension Net::Pcap::Reassemble.
+$Id: Changes,v 1.1 2006/09/12 10:39:59 james Exp $
+
+0.01  Tue 12 Sep 2006 11:34:13 IST
+	First release.

@@ -1,5 +1,19 @@
 Revision history for Perl extension Net::Pcap::Reassemble.
-$Id: Changes,v 1.1 2006/09/12 10:39:59 james Exp $
+$Id: Changes,v 1.2 2006/09/14 21:44:08 james Exp $
+
+0.02 Thu 14 Sep 2006 22:43:05 IST
+	Fix IPv6 handling to update the `Next Header' field of the header
+	preceeding the fragmentable part of an IPv6 datagram to account for
+	the removal of the Fragment Header.
+
+	Fix IPv4 packet handling to properly account for header
+	options+padding.
+
+	Add a flush() function to release memory used by incomplete
+	datagrams.
+
+	Better OOness, and some efficiency improvements (which are probably
+	outweighed by the extra OO glue).
 
 0.01  Tue 12 Sep 2006 11:34:13 IST
 	First release.

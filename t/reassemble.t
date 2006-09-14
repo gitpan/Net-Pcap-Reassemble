@@ -42,6 +42,7 @@ $i = 0;
 Net::Pcap::Reassemble::loop($pcap_t, -1, sub {$i++}, "");
 Net::Pcap::close($pcap_t);
 $pcap_t = undef;
+Net::Pcap::Reassemble::flush();
 
 if ($i == 2) {
 	print "ok 3\n";
@@ -68,6 +69,7 @@ $i = 0;
 Net::Pcap::Reassemble::loop($pcap_t, -1, sub {$i++}, "");
 Net::Pcap::close($pcap_t);
 $pcap_t = undef;
+Net::Pcap::Reassemble::flush();
 
 if ($i == 2) {
 	print "ok 5\n";

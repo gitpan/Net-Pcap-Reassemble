@@ -1,11 +1,12 @@
-# http://module-build.sourceforge.net/META-spec.html
-#XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
-name:         Net-Pcap-Reassemble
-version:      0.02
-version_from: Reassemble.pm
-installdirs:  site
-requires:
+--- #YAML:1.0
+name:                Net-Pcap-Reassemble
+version:             0.03
+abstract:            IP fragment reassembly for Net::Pcap
+license:             perl
+generated_by:        ExtUtils::MakeMaker version 6.31
+distribution_type:   module
+requires:     
     Net::Pcap:                     0
-
-distribution_type: module
-generated_by: ExtUtils::MakeMaker version 6.17
+meta-spec:
+    url:     http://module-build.sourceforge.net/META-spec-v1.2.html
+    version: 1.2

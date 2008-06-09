@@ -1,7 +1,8 @@
 package Net::Pcap::Reassemble;
 
+require 5.002;
 use strict;
-use vars qw($VERSION %pending $callback $debug);
+use vars qw($VERSION %pending $callback $linktype $debug);
 
 use Net::Pcap;
 
@@ -11,7 +12,7 @@ use Net::Pcap;
 # modify it under the same terms as Perl itself.
 # Please submit bug reports, patches and comments to the author.
 #
-# $Id: Reassemble.pm,v 1.9 2006/09/14 21:44:08 james Exp $
+# $Id: Reassemble.pm,v 1.13 2008/06/09 13:52:22 james Exp $
 #
 # This module is a wrapper for the loop() function of the Net::Pcap
 # module. It performs IP fragment reassembly for fragmented datagrams
@@ -20,7 +21,7 @@ use Net::Pcap;
 # more information.
 #
 
-$VERSION = '0.02';
+$VERSION = '0.03';
 $debug   =  0;
 
 ####
@@ -35,6 +36,8 @@ sub loop ($$&$) {
 
 	($pcap_t, $num, $callback, $user_data) = @_ or
 		croak("Missing arguments to loop()");
+
+	defined ($linktype = Net::Pcap::datalink($pcap_t)) or die;
 
 	#
 	# A reference to the user's callback is in $callback, which is
@@ -58,23 +61,32 @@ sub flush () {
 #
 sub _reassemble ($$$) {
 
-	my ($user_data, $header, $packet, $ver);
+	my ($user_data, $header, $packet, $ver, $l2);
 
 	($user_data, $header, $packet) = @_ or
 		croak("Missing arguments to _reassemble()");
 
-	# discard the ethernet header (14 bytes)
-	(undef, $ver) = unpack("a14C", $packet);
+	if ($linktype == DLT_EN10MB) {
+		# discard the ethernet header (14 bytes)
+		$l2 = 14;
+	} elsif ($linktype == DLT_LOOP or $linktype == DLT_NULL) {
+		# discard the loopback header (4 bytes)
+		$l2 = 4;
+	} else {
+		# XXX barf
+		die "unsupported linktype: $linktype";
+	}
+	$ver = unpack("x".$l2." C", $packet);
 	$ver = ($ver & 0xf0) >> 4;
 
 	VER: {
 		if ($ver == 4)	{
-			$packet = _readIPv4pkt($packet);
+			$packet = _readIPv4pkt($packet, $l2);
 			last VER;
 		}
 
 		if ($ver == 6)	{
-			$packet = _readIPv6pkt($packet);
+			$packet = _readIPv6pkt($packet, $l2);
 			last VER;
 		}
 
@@ -89,16 +101,16 @@ sub _reassemble ($$$) {
 #
 # Read an IPv4 packet.
 #
-sub _readIPv4pkt ($) {
+sub _readIPv4pkt ($$) {
 
-	my ($packet, $i, $ver, $ihl, $pktlen, $id, $mf, $offset, $proto,
+	my ($packet, $l2, $i, $ver, $ihl, $pktlen, $id, $mf, $offset, $proto,
 	    $src, $dst, $payload, $datalen);
 
-	$packet = shift or croak("Missing argument to _readIPv4pkt()");
+	($packet, $l2) = @_ or croak("Missing argument to _readIPv4pkt()");
 
-	# The undef's are: ethernet header, tos, ttl, chksum, options+data
-	(undef, $i, undef, $pktlen, $id, $offset, undef, $proto, undef,
-	 $src, $dst) = unpack("a14CCnnnCCnNN", $packet);
+	# The x's are: layer2 header, tos, ttl, chksum, options+data
+	($i, $pktlen, $id, $offset, $proto, $src, $dst) = 
+				unpack("x".$l2." C x n n n x C x2 N N", $packet);
 
 	$ver     = ($i & 0xf0) >> 4;
 	$ihl     = ($i & 0x0f)  * 4;
@@ -174,18 +186,18 @@ sub _readIPv4pkt ($) {
 #
 # Read an IPv6 header/packet.
 #
-sub _readIPv6pkt ($) {
+sub _readIPv6pkt ($$) {
 
-	my ($packet, $ver, $payloadlen, $nexthdr, $src, $dst, $payload, $i,
+	my ($packet, $l2, $ver, $payloadlen, $nexthdr, $src, $dst, $payload, $i,
 	    $offset, $id, $m, $hdrlen, $exthdrlentotal, $unfrag,
 	    $unfragoffset, $prevhdr, $prevhdrlen);
 
-	$packet     = shift or croak("Missing argument to _readIPv6pkt()");
-	$prevhdr    = 0;	# Hackity, hack, hack
+	($packet, $l2) = @_ or croak("Missing argument to _readIPv6pkt()");
+	$prevhdr       = 0;	# Hackity, hack, hack
 
-	# The undef's are: ethernet header, class, label, hlim
-	(undef, $ver, undef, undef, $payloadlen, $nexthdr, undef,
-	 $src, $dst, $payload) = unpack("a14CCnnCCH32H32a*", $packet);
+	# The x's are: layer2 header, class, label, hlim
+	($ver, $payloadlen, $nexthdr, $src, $dst, $payload) = 
+			unpack("x".$l2." C x3 n C x H32 H32 a*", $packet);
 
 	$ver            = ($ver & 0xf0) >> 4;
 	$src            = join(":", unpack("H4"x8, pack("H32", $src)));
@@ -334,7 +346,7 @@ sub _readIPv6Fragheader ($) {
 
 	$packet = shift or croak("Missing argument to _readIPv6Fragheader()");
 
-	($nexthdr, undef, $offset, $id, $payload) = unpack("CCnNa*", $packet);
+	($nexthdr, $offset, $id, $payload) = unpack("C x n N a*", $packet);
 
 	$m        = $offset & 0x0001;
 	$offset >>= 3;
@@ -460,23 +472,13 @@ sub iscomplete ($) {
 
 		#
 		# If the first octet in this fragment is the octet we're
-		# searching for ...
+		# searching for and the last octet is the last octet of the
+		# complete datagram then we have all the packet data. If not,
+		# the next fragment we search for is the one that starts where
+		# this one ends.
 		#
 		if ($frag->start == $nextfrag) {
-
-			#
-			# ... and the last octet is the last octet of the
-			# complete datagram, then we have all the packet
-			# data ...
-			#
 			last FRAGMENT if ($frag->end == $self->{LASTOCTET});
-
-			#
-			# ... but if the last octet is not the last octet of
-			# the complete datagram, then the next fragment we
-			# search for is the one that starts where this one
-			# ends.
-			#
 			$nextfrag = $frag->end;
 			next FRAGMENT;
 		}
@@ -754,11 +756,17 @@ passing.
 
 =item *
 
-Incomplete datagrams are left in limbo. Should be able to either flush
-them out upon request or signal via an option that the callback be
-invoked for individual fragments aswell as the complete datagram.
+Incomplete datagrams are left in limbo. Should be able to signal via an
+option that the callback be invoked for individual fragments aswell as
+the complete datagram.
 
 =back
+
+=head1 LICENSE
+
+This program is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself. (Being a speaker of British english,
+I'd call it a "licence" though)
 
 =head1 AUTHOR
 

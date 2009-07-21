@@ -1,13 +1,13 @@
 
 Net::Pcap::Reassemble - IP fragment reassembly for Net::Pcap
 
-Copyright (c) 2006 James Raftery <james@now.ie>. All rights reserved.
+Copyright (c) 2006-2009 James Raftery <james@now.ie>. All rights reserved.
 This program is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.
 
 Please submit bug reports, patches and comments to the author.
 
-$Id: README,v 1.1 2006/09/12 10:39:59 james Exp $
+$Id: README,v 1.2 2009/07/21 17:21:18 james Exp $
 
 This module is a wrapper for the loop() function of the Net::Pcap
 module. It performs IP fragment reassembly for fragmented datagrams

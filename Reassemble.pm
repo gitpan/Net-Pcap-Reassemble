@@ -2,17 +2,17 @@ package Net::Pcap::Reassemble;
 
 require 5.002;
 use strict;
-use vars qw($VERSION %pending $callback $linktype $debug);
+use vars qw($VERSION %pending $callback $linktype $debug $stripl2);
 
 use Net::Pcap;
 
 #
-# Copyright (c) 2006 James Raftery <james@now.ie>. All rights reserved.
+# Copyright (c) 2006-2009 James Raftery <james@now.ie>. All rights reserved.
 # This program is free software; you can redistribute it and/or
 # modify it under the same terms as Perl itself.
 # Please submit bug reports, patches and comments to the author.
 #
-# $Id: Reassemble.pm,v 1.13 2008/06/09 13:52:22 james Exp $
+# $Id: Reassemble.pm,v 1.15 2009/07/21 17:21:07 james Exp $
 #
 # This module is a wrapper for the loop() function of the Net::Pcap
 # module. It performs IP fragment reassembly for fragmented datagrams
@@ -21,8 +21,9 @@ use Net::Pcap;
 # more information.
 #
 
-$VERSION = '0.03';
+$VERSION = '0.04';
 $debug   =  0;
+$stripl2 =  0;
 
 ####
 
@@ -66,54 +67,66 @@ sub _reassemble ($$$) {
 	($user_data, $header, $packet) = @_ or
 		croak("Missing arguments to _reassemble()");
 
-	if ($linktype == DLT_EN10MB) {
-		# discard the ethernet header (14 bytes)
-		$l2 = 14;
-	} elsif ($linktype == DLT_LOOP or $linktype == DLT_NULL) {
-		# discard the loopback header (4 bytes)
-		$l2 = 4;
+	($l2, $packet) = splitpkt($packet);
+	$ver = unpack("C", $packet) >> 4;
+
+	if ($ver == 4)	{
+		$packet = _readIPv4pkt($packet);
+	} elsif ($ver == 6)	{
+		$packet = _readIPv6pkt($packet);
 	} else {
-		# XXX barf
-		die "unsupported linktype: $linktype";
+		$packet = undef;
 	}
-	$ver = unpack("x".$l2." C", $packet);
-	$ver = ($ver & 0xf0) >> 4;
 
-	VER: {
-		if ($ver == 4)	{
-			$packet = _readIPv4pkt($packet, $l2);
-			last VER;
-		}
+	if ($packet) {
+		# Put back the layer 2 header data from the most recent packet
+		$packet = $l2.$packet unless $stripl2;
+		&$callback($user_data, $header, $packet);
+	}
+}
 
-		if ($ver == 6)	{
-			$packet = _readIPv6pkt($packet, $l2);
-			last VER;
-		}
+#
+# Split the packet into layer 2 header and IP datagram.
+#
+sub splitpkt ($) {
 
-		# default:
-			return;
+	my ($packet, $bytes);
 
-	} # End: VER
+	$packet = shift or croak("Missing argument to splitpkt()");
 
-	&$callback($user_data, $header, $packet) if $packet;
+	if ($linktype == DLT_EN10MB) {
+		# ethernet header
+		$bytes = 14;
+	} elsif ($linktype == DLT_LOOP or $linktype == DLT_NULL) {
+		# loopback header
+		$bytes = 4;
+	} elsif ($linktype == DLT_RAW) {
+		# no header
+		$bytes = 0;
+	} else {
+		# barf
+		croak("unsupported linktype: $linktype");
+	}
+
+	return unpack("a$bytes a*", $packet);
 }
 
 #
 # Read an IPv4 packet.
 #
-sub _readIPv4pkt ($$) {
+sub _readIPv4pkt ($) {
 
-	my ($packet, $l2, $i, $ver, $ihl, $pktlen, $id, $mf, $offset, $proto,
+	my ($packet, $i, $ver, $ihl, $pktlen, $id, $mf, $offset, $proto,
 	    $src, $dst, $payload, $datalen);
 
-	($packet, $l2) = @_ or croak("Missing argument to _readIPv4pkt()");
+	$packet = shift or croak("Missing argument to _readIPv4pkt()");
 
-	# The x's are: layer2 header, tos, ttl, chksum, options+data
+	# The x's are: tos, ttl, chksum, options+data
 	($i, $pktlen, $id, $offset, $proto, $src, $dst) = 
-				unpack("x".$l2." C x n n n x C x2 N N", $packet);
+				unpack("C x n3 x C x2 N2", $packet);
 
-	$ver     = ($i & 0xf0) >> 4;
-	$ihl     = ($i & 0x0f)  * 4;
+	$ver     = $i >> 4;
+	$ihl     = ($i & 0x0f) * 4;
 	$mf      = ($offset >> 13) & 0x01;	# More fragments flag
 	$offset  = ($offset & 0x1fff) << 3;
 	$src     = join(".", unpack("C*", pack("N", $src)));
@@ -138,8 +151,8 @@ sub _readIPv4pkt ($$) {
 	# which passes back the unmodified $packet data.
 	#
 	if (($mf and $offset >= 0) or ($offset > 0)) {
-		print "Fragment! ver:$ver ihl:$ihl packetlen:$pktlen id:$id mf:$mf ".
-			"offset:$offset datalen:$datalen proto:$proto\n".
+		print "Fragment! ver:$ver ihl:$ihl packetlen:$pktlen id:$id ".
+			"mf:$mf offset:$offset datalen:$datalen proto:$proto\n".
 			"src:$src dst:$dst\n" if $debug;
 
 		$i = "$src $dst $id $proto";
@@ -154,18 +167,19 @@ sub _readIPv4pkt ($$) {
 		if ($offset == 0) {
 			$payload = $packet;
 		} else {
-			$payload = substr($packet, 14+$ihl, $datalen);
+			$payload = substr($packet, $ihl, $datalen);
 		}
 
 		#
 		# XXX We don't expunge old entries
 		#
 		if (exists $pending{$i}) {
-			$pending{$i}->addfragment($offset, $datalen, $mf, $payload) or
+			$pending{$i}->addfragment($offset, $datalen, $mf,
+					$payload) or
 				print STDERR "addfragment: $offset $datalen $mf failed\n";
 		} else {
-			$pending{$i} = Net::Pcap::Reassemble::Packet->new(
-					$i, $offset, $datalen, $mf, $payload) or
+			$pending{$i} = Net::Pcap::Reassemble::Packet->new($i,
+					$offset, $datalen, $mf, $payload) or
 				print STDERR "new Packet: $i $offset $datalen, $mf failed\n";
 		}
 
@@ -186,22 +200,22 @@ sub _readIPv4pkt ($$) {
 #
 # Read an IPv6 header/packet.
 #
-sub _readIPv6pkt ($$) {
+sub _readIPv6pkt ($) {
 
-	my ($packet, $l2, $ver, $payloadlen, $nexthdr, $src, $dst, $payload, $i,
+	my ($packet, $ver, $payloadlen, $nexthdr, $src, $dst, $payload, $i,
 	    $offset, $id, $m, $hdrlen, $exthdrlentotal, $unfrag,
 	    $unfragoffset, $prevhdr, $prevhdrlen);
 
-	($packet, $l2) = @_ or croak("Missing argument to _readIPv6pkt()");
-	$prevhdr       = 0;	# Hackity, hack, hack
+	$packet  = shift or croak("Missing argument to _readIPv6pkt()");
+	$prevhdr = 0;	# Hackity, hack, hack
 
-	# The x's are: layer2 header, class, label, hlim
+	# The x's are: class, label, hlim
 	($ver, $payloadlen, $nexthdr, $src, $dst, $payload) = 
-			unpack("x".$l2." C x3 n C x H32 H32 a*", $packet);
+			unpack("C x3 n C x H32 H32 a*", $packet);
 
-	$ver            = ($ver & 0xf0) >> 4;
-	$src            = join(":", unpack("H4"x8, pack("H32", $src)));
-	$dst            = join(":", unpack("H4"x8, pack("H32", $dst)));
+	$ver >>= 4;
+	$src   = join(":", unpack("H4"x8, pack("H32", $src)));
+	$dst   = join(":", unpack("H4"x8, pack("H32", $dst)));
 	$exthdrlentotal = 0;	# extension header bytes read so far
 
 	print "ver:$ver payloadlen:$payloadlen nexthdr:$nexthdr\n" .
@@ -261,17 +275,18 @@ sub _readIPv6pkt ($$) {
 		if ($offset == 0) {
 
 			# Offset to the start of the unfragmentable part
-			$unfragoffset = 14+40+$exthdrlentotal;
+			$unfragoffset = 40+$exthdrlentotal;
 			$unfrag = substr($packet, 0, $unfragoffset);
 
 			if ($prevhdr == 0) {
-				# Ethernet header + 6 bytes into IPv6 header
-				substr($unfrag, 14+6, 1) = $nexthdr;
+				# 6 bytes into IPv6 header
+				substr($unfrag, 6, 1) = $nexthdr;
 			} else {
 				# XXX not tested
 				# We've read N extension headers
-				# Wind back one header length ($prevhdrlen) from the
-				# start of the unfragmentable part ($unfragoffset).
+				# Wind back one header length ($prevhdrlen)
+				# from the start of the unfragmentable part
+				# ($unfragoffset).
 				substr($unfrag, $unfragoffset-$prevhdrlen, 1) = $nexthdr;
 			}
 
@@ -280,8 +295,8 @@ sub _readIPv6pkt ($$) {
 
 		#
 		# Fragmentable part length =
-		#       packet payload length - length of extension headers read
-		#		(add 8 bytes for the Fragment header)
+		#     packet payload length - length of extension headers read
+		#     (add 8 bytes for the Fragment header)
 		#
 		$payloadlen -= ($exthdrlentotal+8);
 
@@ -289,11 +304,12 @@ sub _readIPv6pkt ($$) {
 		# XXX We don't expunge old entries
 		#
 		if (exists $pending{$i}) {
-			$pending{$i}->addfragment($offset, $payloadlen, $m, $payload) or
+			$pending{$i}->addfragment($offset, $payloadlen, $m,
+					$payload) or
 				print STDERR "addfrag: $i $offset $payloadlen $m failed\n";
 		} else {
-			$pending{$i} = Net::Pcap::Reassemble::Packet->new($i, $offset,
-					$payloadlen, $m, $payload) or
+			$pending{$i} = Net::Pcap::Reassemble::Packet->new($i,
+					$offset, $payloadlen, $m, $payload) or
 				print STDERR "Packet: $i $offset $payloadlen $m failed\n";
 		}
 
@@ -331,7 +347,7 @@ sub _readIPv6Extheader ($) {
 
 	# XXX not tested
 	#     use substr?
-	$payload = unpack(("x"x $hdrlen)."a*", $packet);
+	$payload = unpack("x$hdrlen a*", $packet);
 
 	return($nexthdr, $hdrlen, $payload);
 }
@@ -658,6 +674,12 @@ true:
 
  $Net::Pcap::Reassemble::debug = 1;
 
+Layer 2 header data (typically an ethernet header) will be omitted from the
+packet supplied to the callback function if the C<$stripl2> variable in the
+package namespace evaluates to true:
+
+ $Net::Pcap::Reassemble::stripl2 = 1;
+
 =item flush()
 
 The C<flush()> function destroys the data structures storing any
@@ -742,7 +764,9 @@ L<Net::Pcap>
 
 =item *
 
-Stale fragments are not aged out of the pending fragment list.
+Stale fragments are not aged out of the pending fragment list. We could look
+at the pcap header for the capture time of each packet and age out based on
+that.
 
 =item *
 
@@ -759,6 +783,12 @@ passing.
 Incomplete datagrams are left in limbo. Should be able to signal via an
 option that the callback be invoked for individual fragments aswell as
 the complete datagram.
+
+=item *
+
+The IP header in the packet supplied to the callback is from the first
+datagram. Length and checksum values will be incorrect with respect to
+the reassembled datagram that the callback sees.
 
 =back
 

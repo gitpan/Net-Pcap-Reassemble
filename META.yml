@@ -1,12 +1,19 @@
 --- #YAML:1.0
-name:                Net-Pcap-Reassemble
-version:             0.03
-abstract:            IP fragment reassembly for Net::Pcap
-license:             perl
-generated_by:        ExtUtils::MakeMaker version 6.31
-distribution_type:   module
-requires:     
-    Net::Pcap:                     0
+name:               Net-Pcap-Reassemble
+version:            0.04
+abstract:           IP fragment reassembly for Net::Pcap
+author:  []
+license:            perl
+distribution_type:  module
+configure_requires:
+    ExtUtils::MakeMaker:  0
+requires:
+    Net::Pcap:  0
+no_index:
+    directory:
+        - t
+        - inc
+generated_by:       ExtUtils::MakeMaker version 6.48
 meta-spec:
-    url:     http://module-build.sourceforge.net/META-spec-v1.2.html
-    version: 1.2
+    url:      http://module-build.sourceforge.net/META-spec-v1.4.html
+    version:  1.4
